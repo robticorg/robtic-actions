@@ -1,0 +1,17 @@
+name: Discord Activity Notifications
+
+on:
+  watch:
+    types: [started]
+  fork:
+
+jobs:
+  notify:
+    name: Notify Discord
+    uses: ./.github/workflows/reusable-notify.yml
+    with:
+      notification_type: activity
+      username: 'Robtic GitHub'
+      footer_text: 'Robtic GitHub Activity'
+    secrets:
+      DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_ACTIVITY }}

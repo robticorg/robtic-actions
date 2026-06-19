@@ -1,0 +1,18 @@
+# Release — drop this into .github/workflows/ in any repo.
+# Replace YOUR_ORG/github-actions with your actual shared-workflows repo.
+# Optional secret: DISCORD_WEBHOOK
+
+name: Release
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  release:
+    uses: YOUR_ORG/github-actions/.github/workflows/release.yml@main
+    with:
+      tag: ${{ github.event.release.tag_name }}
+      release-url: ${{ github.event.release.html_url }}
+    secrets:
+      DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}

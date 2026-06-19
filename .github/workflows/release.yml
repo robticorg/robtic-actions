@@ -1,0 +1,68 @@
+name: Release
+
+# Called from any repo on a release event:
+#
+#   on:
+#     release:
+#       types: [published]
+#
+#   jobs:
+#     release:
+#       uses: YOUR_ORG/github-actions/.github/workflows/release.yml@main
+#       with:
+#         tag: ${{ github.event.release.tag_name }}
+#         release-url: ${{ github.event.release.html_url }}
+#       secrets:
+#         DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+
+on:
+  workflow_call:
+    inputs:
+
+      tag:
+        description: 'Release tag name (e.g. v1.2.0)'
+        required: false
+        type: string
+        default: ''
+
+      release-url:
+        description: 'URL to the GitHub release page'
+        required: false
+        type: string
+        default: ''
+
+      pre-release-command:
+        description: 'Optional command to run before the release is announced (e.g. build step)'
+        required: false
+        type: string
+        default: ''
+
+    secrets:
+      DISCORD_WEBHOOK:
+        description: 'Discord webhook URL — omit to skip notifications'
+        required: false
+
+jobs:
+  release:
+    name: Release ${{ inputs.tag }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Pre-release step
+        if: ${{ inputs.pre-release-command != '' }}
+        run: ${{ inputs.pre-release-command }}
+
+  notify:
+    name: Notify Discord
+    needs: release
+    if: ${{ always() && needs.release.result == 'success' }}
+    uses: ./.github/workflows/reusable-notify.yml
+    with:
+      notification_type: release
+      release_tag: ${{ inputs.tag }}
+      release_url: ${{ inputs.release-url }}
+      username: 'Robtic Releases'
+      footer_text: 'Robtic Release Pipeline'
+    secrets: inherit

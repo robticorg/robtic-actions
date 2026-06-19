@@ -1,0 +1,102 @@
+name: Node CI
+
+# Called from any repo:
+#
+#   jobs:
+#     ci:
+#       uses: YOUR_ORG/github-actions/.github/workflows/node-ci.yml@main
+#       with:
+#         node-version: '20'
+#         package-manager: npm
+#         commit-msg: ${{ github.event.head_commit.message || github.event.pull_request.title }}
+#       secrets:
+#         DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_CI }}
+
+on:
+  workflow_call:
+    inputs:
+
+      node-version:
+        required: false
+        type: string
+        default: '20'
+
+      package-manager:
+        description: 'npm | yarn | pnpm'
+        required: false
+        type: string
+        default: 'npm'
+
+      install-command:
+        description: 'Override default install command (e.g. "npm ci")'
+        required: false
+        type: string
+        default: ''
+
+      typescript-check:
+        description: 'Run npx tsc --noEmit before building'
+        required: false
+        type: boolean
+        default: false
+
+      build-command:
+        description: 'Override default build command'
+        required: false
+        type: string
+        default: ''
+
+      test-command:
+        description: 'Test command to run (skipped if empty)'
+        required: false
+        type: string
+        default: ''
+
+      commit-msg:
+        description: 'Commit message or PR title shown in the Discord notification'
+        required: false
+        type: string
+        default: ''
+
+    secrets:
+      DISCORD_WEBHOOK:
+        description: 'Discord webhook URL — omit to skip notifications'
+        required: false
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: ${{ inputs.package-manager }}
+
+      - name: Install Dependencies
+        run: ${{ inputs.install-command || (inputs.package-manager == 'npm' && 'npm ci' || format('{0} install', inputs.package-manager)) }}
+
+      - name: TypeScript Check
+        if: ${{ inputs.typescript-check }}
+        run: npx tsc --noEmit
+
+      - name: Build
+        if: ${{ inputs.build-command != '' }}
+        run: ${{ inputs.build-command }}
+
+      - name: Test
+        if: ${{ inputs.test-command != '' }}
+        run: ${{ inputs.test-command }}
+
+  notify:
+    name: Notify Discord
+    needs: build
+    if: ${{ always() }}
+    uses: ./.github/workflows/reusable-notify.yml
+    with:
+      notification_type: ${{ needs.build.result == 'success' && 'ci-success' || 'ci-failure' }}
+      commit_msg: ${{ inputs.commit-msg }}
+    secrets: inherit

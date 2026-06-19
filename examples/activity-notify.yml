@@ -1,0 +1,21 @@
+# Drop this into .github/workflows/ in any repo.
+# Replace YOUR_ORG/github-actions with your actual org/repo name.
+# Required secret: DISCORD_WEBHOOK
+
+name: Discord Activity Notifications
+
+on:
+  watch:
+    types: [started]
+  fork:
+
+jobs:
+  notify:
+    name: Notify Discord
+    uses: YOUR_ORG/github-actions/.github/workflows/reusable-notify.yml@main
+    with:
+      notification_type: activity
+      username: 'Robtic GitHub'
+      footer_text: 'Robtic GitHub Activity'
+    secrets:
+      DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_ACTIVITY }}

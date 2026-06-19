@@ -1,0 +1,18 @@
+# Bun CI — drop this into .github/workflows/ in any repo.
+# Replace YOUR_ORG/github-actions with your actual shared-workflows repo.
+# Optional secret: DISCORD_WEBHOOK_CI
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  ci:
+    uses: YOUR_ORG/github-actions/.github/workflows/bun-ci.yml@main
+    with:
+      commit-msg: ${{ github.event.head_commit.message || github.event.pull_request.title }}
+    secrets:
+      DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_CI }}

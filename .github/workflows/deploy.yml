@@ -1,0 +1,73 @@
+name: Deploy
+
+# Called from any repo:
+#
+#   jobs:
+#     deploy:
+#       uses: YOUR_ORG/github-actions/.github/workflows/deploy.yml@main
+#       with:
+#         environment: production
+#         deploy-command: 'npm run deploy'
+#         app-url: 'https://your-app.example.com'
+#         commit-msg: ${{ github.event.head_commit.message }}
+#       secrets:
+#         DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+
+on:
+  workflow_call:
+    inputs:
+
+      environment:
+        description: 'Target environment name (production, staging, preview, …)'
+        required: false
+        type: string
+        default: 'production'
+
+      deploy-command:
+        description: 'Shell command to run for the deployment'
+        required: true
+        type: string
+
+      app-url:
+        description: 'Live URL of the deployed app — shown as a link in the Discord notification'
+        required: false
+        type: string
+        default: ''
+
+      commit-msg:
+        description: 'Commit message or PR title shown in the Discord notification'
+        required: false
+        type: string
+        default: ''
+
+    secrets:
+      DISCORD_WEBHOOK:
+        description: 'Discord webhook URL — omit to skip notifications'
+        required: false
+
+jobs:
+  deploy:
+    name: Deploy to ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Deploy
+        run: ${{ inputs.deploy-command }}
+
+  notify:
+    name: Notify Discord
+    needs: deploy
+    if: ${{ always() }}
+    uses: ./.github/workflows/reusable-notify.yml
+    with:
+      notification_type: ${{ needs.deploy.result == 'success' && 'deploy' || 'ci-failure' }}
+      deploy_env: ${{ inputs.environment }}
+      deploy_url: ${{ inputs.app-url }}
+      commit_msg: ${{ inputs.commit-msg }}
+      embed_title: ${{ needs.deploy.result != 'success' && format('🔴 Deploy Failed ({0})', inputs.environment) || '' }}
+      username: 'Robtic Deploys'
+      footer_text: 'Robtic Deploy Pipeline'
+    secrets: inherit

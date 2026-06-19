@@ -1,0 +1,81 @@
+name: Bun CI
+
+# Called from any repo:
+#
+#   jobs:
+#     ci:
+#       uses: YOUR_ORG/github-actions/.github/workflows/bun-ci.yml@main
+#       with:
+#         commit-msg: ${{ github.event.head_commit.message || github.event.pull_request.title }}
+#       secrets:
+#         DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_CI }}
+
+on:
+  workflow_call:
+    inputs:
+
+      bun-version:
+        description: 'Bun version to use'
+        required: false
+        type: string
+        default: 'latest'
+
+      install-command:
+        required: false
+        type: string
+        default: 'bun install'
+
+      typescript-check:
+        description: 'Run bunx tsc --noEmit before building'
+        required: false
+        type: boolean
+        default: true
+
+      build-command:
+        required: false
+        type: string
+        default: 'bun run build'
+
+      commit-msg:
+        description: 'Commit message or PR title shown in the Discord notification'
+        required: false
+        type: string
+        default: ''
+
+    secrets:
+      DISCORD_WEBHOOK:
+        description: 'Discord webhook URL — omit to skip notifications'
+        required: false
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: ${{ inputs.bun-version }}
+
+      - name: Install Dependencies
+        run: ${{ inputs.install-command }}
+
+      - name: TypeScript Check
+        if: ${{ inputs.typescript-check }}
+        run: bunx tsc --noEmit
+
+      - name: Build
+        run: ${{ inputs.build-command }}
+
+  notify:
+    name: Notify Discord
+    needs: build
+    if: ${{ always() }}
+    uses: ./.github/workflows/reusable-notify.yml
+    with:
+      notification_type: ${{ needs.build.result == 'success' && 'ci-success' || 'ci-failure' }}
+      commit_msg: ${{ inputs.commit-msg }}
+    secrets: inherit
