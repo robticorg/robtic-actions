@@ -1,0 +1,29 @@
+# Deploy (bash type) — drop this into .github/workflows/ in any project.
+# No Docker build — just `git pull` + install + restart directly on the
+# target, run by a self-hosted runner that lives on the server.
+#
+# Replace YOUR_ORG/github-actions with your actual shared-workflows repo.
+# Required secret:  none
+# Optional secret:  DISCORD_WEBHOOK_DEPLOY
+
+name: Deploy
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy:
+    uses: YOUR_ORG/github-actions/.github/workflows/deploy.yml@main
+    with:
+      deploy-type: bash
+      runner-labels: '["self-hosted", "robtic-deploy"]'
+      environment-name: 'Robtic Server'
+      environment-url: 'https://robtic.org'
+      server-label: 'core.robtic.org'
+      working-directory: '/home/robtic/app'
+      pull-command: 'git pull origin main'
+      install-command: 'npm ci --omit=dev'
+      restart-command: 'pm2 restart robtic-bot'
+    secrets:
+      DISCORD_WEBHOOK_DEPLOY: ${{ secrets.DISCORD_WEBHOOK_DEPLOY }}

@@ -1,0 +1,27 @@
+# Deploy (docker type) — drop this into .github/workflows/ in any project.
+# Builds & pushes the image to GHCR, then runs `docker compose pull/up` on
+# a self-hosted runner that lives on the target server.
+#
+# Replace YOUR_ORG/github-actions with your actual shared-workflows repo.
+# Required secret:  none
+# Optional secret:  DISCORD_WEBHOOK_DEPLOY
+
+name: Deploy
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy:
+    uses: YOUR_ORG/github-actions/.github/workflows/deploy.yml@main
+    with:
+      deploy-type: docker
+      runner-labels: '["self-hosted", "robtic-deploy"]'
+      environment-name: 'Robtic Server'
+      environment-url: 'https://robtic.org'
+      server-label: 'core.robtic.org'
+      compose-project-name: 'robtic-system'
+      compose-env-file: '/home/robtic/.env'
+    secrets:
+      DISCORD_WEBHOOK_DEPLOY: ${{ secrets.DISCORD_WEBHOOK_DEPLOY }}

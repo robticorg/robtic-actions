@@ -1,0 +1,413 @@
+name: Deploy (Reusable)
+
+# Call this workflow from any repo:
+#
+#   jobs:
+#     deploy:
+#       uses: YOUR_ORG/github-actions/.github/workflows/deploy.yml@main
+#       with:
+#         deploy-type: docker              # or: bash
+#         runner-labels: '["self-hosted", "robtic-deploy"]'
+#         environment-name: 'Robtic Server'
+#         environment-url: 'https://robtic.org'
+#         server-label: 'core.robtic.org'
+#         compose-project-name: 'robtic-system'
+#         compose-env-file: '/home/robtic/.env'
+#       secrets:
+#         DISCORD_WEBHOOK_DEPLOY: ${{ secrets.DISCORD_WEBHOOK_DEPLOY }}
+#
+# See examples/deploy-docker.yml and examples/deploy-bash.yml for full drop-in copies.
+
+on:
+  workflow_call:
+    inputs:
+
+      # ── Deploy type ─────────────────────────────────────────────────────────
+      deploy-type:
+        description: 'docker (build & push to GHCR, then `docker compose pull/up`) | bash (no build — git pull + install + restart directly on the target)'
+        required: true
+        type: string
+
+      # ── Where it runs ───────────────────────────────────────────────────────
+      runner-labels:
+        description: 'JSON array of runner labels for the deploy job, e.g. ["self-hosted","robtic-deploy"]'
+        required: false
+        type: string
+        default: '["self-hosted"]'
+
+      environment-name:
+        description: 'GitHub Environment name shown on the deployment'
+        required: false
+        type: string
+        default: 'production'
+      environment-url:
+        description: 'Live URL of the deployed app (shown on the GitHub Environment and in the success notification)'
+        required: false
+        type: string
+        default: ''
+      server-label:
+        description: 'Friendly server name shown in the Discord embed (falls back to environment-name)'
+        required: false
+        type: string
+        default: ''
+
+      checkout:
+        description: 'Whether to checkout the repo in the deploy job'
+        required: false
+        type: boolean
+        default: true
+      working-directory:
+        description: 'Directory to run deploy commands in (defaults to the job workspace / checkout root)'
+        required: false
+        type: string
+        default: ''
+      pre-deploy-command:
+        description: 'Optional command to run before the main deploy step (e.g. backup, maintenance mode on)'
+        required: false
+        type: string
+        default: ''
+      post-deploy-command:
+        description: 'Optional command to run after a successful deploy (e.g. migrations, cache warmup, maintenance mode off)'
+        required: false
+        type: string
+        default: ''
+
+      retry-attempts:
+        description: 'Retry attempts for the pull step (docker compose pull / git pull)'
+        required: false
+        type: number
+        default: 3
+      retry-delay:
+        description: 'Seconds to wait between retries'
+        required: false
+        type: number
+        default: 15
+
+      # ── deploy-type: docker ─────────────────────────────────────────────────
+      registry:
+        description: 'Container registry (docker type only)'
+        required: false
+        type: string
+        default: 'ghcr.io'
+      image-name:
+        description: 'Full image name, e.g. ghcr.io/org/repo (docker type only, defaults to "<registry>/<github.repository>")'
+        required: false
+        type: string
+        default: ''
+      image-tags:
+        description: 'docker/metadata-action tag rules (docker type only)'
+        required: false
+        type: string
+        default: |
+          type=raw,value=latest
+          type=sha,prefix=
+      dockerfile:
+        description: 'Path to the Dockerfile (docker type only)'
+        required: false
+        type: string
+        default: 'Dockerfile'
+      build-context:
+        description: 'Docker build context (docker type only)'
+        required: false
+        type: string
+        default: '.'
+      build-args:
+        description: 'Newline-separated build args passed to build-push-action (docker type only)'
+        required: false
+        type: string
+        default: ''
+      compose-project-name:
+        description: 'docker compose -p project name (docker type only, omitted if empty)'
+        required: false
+        type: string
+        default: ''
+      compose-file:
+        description: 'Path to a docker-compose file, passed with -f (docker type only, omitted if empty)'
+        required: false
+        type: string
+        default: ''
+      compose-env-file:
+        description: 'Path to an --env-file for docker compose (docker type only, omitted if empty)'
+        required: false
+        type: string
+        default: ''
+      compose-pull-command:
+        description: 'Override the full "docker compose ... pull" command (docker type only)'
+        required: false
+        type: string
+        default: ''
+      compose-up-command:
+        description: 'Override the full "docker compose ... up -d" command (docker type only)'
+        required: false
+        type: string
+        default: ''
+
+      # ── deploy-type: bash ────────────────────────────────────────────────────
+      pull-command:
+        description: 'Command to update the source on the target (bash type only)'
+        required: false
+        type: string
+        default: 'git pull'
+      install-command:
+        description: 'Command to install/update dependencies (bash type only, e.g. "npm ci", "pip install -r requirements.txt")'
+        required: false
+        type: string
+        default: ''
+      restart-command:
+        description: 'Command to restart the app (bash type only, e.g. "pm2 restart app", "sudo systemctl restart myapp")'
+        required: false
+        type: string
+        default: ''
+
+      # ── Notifications ───────────────────────────────────────────────────────
+      notify:
+        description: 'Send Discord notifications for deploy start/success/failure'
+        required: false
+        type: boolean
+        default: true
+      notify-username:
+        description: 'Discord bot display name'
+        required: false
+        type: string
+        default: 'Robtic Deploy'
+
+    secrets:
+      DISCORD_WEBHOOK_DEPLOY:
+        description: 'Discord webhook URL — omit or leave unset to skip notifications'
+        required: false
+
+jobs:
+  build:
+    name: Build & Push Image
+    if: ${{ inputs.deploy-type == 'docker' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to registry
+        uses: docker/login-action@v3.4.0
+        with:
+          registry: ${{ inputs.registry }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5.7.0
+        with:
+          images: ${{ inputs.image-name != '' && inputs.image-name || format('{0}/{1}', inputs.registry, github.repository) }}
+          tags: ${{ inputs.image-tags }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.build-context }}
+          file: ${{ inputs.dockerfile }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: ${{ inputs.build-args }}
+
+  deploy:
+    name: Deploy
+    needs: build
+    if: ${{ always() && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
+    runs-on: ${{ fromJSON(inputs.runner-labels) }}
+    environment:
+      name: ${{ inputs.environment-name }}
+      url: ${{ inputs.environment-url }}
+    env:
+      ACTOR: ${{ github.actor }}
+      REPO: ${{ github.repository }}
+      BRANCH: ${{ github.ref_name }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      AVATAR: https://github.com/${{ github.actor }}.png
+      ACTOR_URL: https://github.com/${{ github.actor }}
+      COMMIT_MSG: ${{ github.event.head_commit.message }}
+      SERVER_LABEL: ${{ inputs.server-label != '' && inputs.server-label || inputs.environment-name }}
+      DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_DEPLOY }}
+      NOTIFY_USERNAME: ${{ inputs.notify-username }}
+    steps:
+      - name: Notify Deployment Start
+        if: ${{ inputs.notify }}
+        env:
+          TITLE: '🚀 Deployment Started'
+          COLOR: '16753920'
+        run: |
+          set -uo pipefail
+          if [ -z "${DISCORD_WEBHOOK:-}" ]; then
+            echo "DISCORD_WEBHOOK_DEPLOY not set — skipping notification"
+            exit 0
+          fi
+
+          esc() {
+            local s="$1"
+            s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; s="${s//$'\n'/\\n}"; s="${s//$'\r'/}"
+            printf '%s' "$s"
+          }
+
+          FIELDS="{\"name\":\"📦 Repository\",\"value\":\"$(esc "$REPO")\",\"inline\":true},{\"name\":\"🌿 Branch\",\"value\":\"$(esc "$BRANCH")\",\"inline\":true},{\"name\":\"🖥 Server\",\"value\":\"$(esc "$SERVER_LABEL")\",\"inline\":true}"
+          if [ -n "${COMMIT_MSG:-}" ]; then
+            FIELDS="$FIELDS,{\"name\":\"📝 Commit\",\"value\":\"$(esc "$COMMIT_MSG")\",\"inline\":false}"
+          fi
+
+          PAYLOAD="{\"username\":\"$(esc "$NOTIFY_USERNAME")\",\"embeds\":[{\"title\":\"$(esc "$TITLE")\",\"url\":\"$(esc "$RUN_URL")\",\"color\":$COLOR,\"author\":{\"name\":\"$(esc "$ACTOR")\",\"icon_url\":\"$(esc "$AVATAR")\",\"url\":\"$(esc "$ACTOR_URL")\"},\"fields\":[$FIELDS],\"footer\":{\"text\":\"Robtic Deployment Pipeline\"},\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}]}"
+
+          curl -sf -H "Content-Type: application/json" -d "$PAYLOAD" "$DISCORD_WEBHOOK" >/dev/null \
+            && echo "Discord notification sent [start]" \
+            || echo "Discord notification failed [start]" >&2
+
+      - uses: actions/checkout@v4
+        if: ${{ inputs.checkout }}
+
+      - name: Log in to registry
+        if: ${{ inputs.deploy-type == 'docker' }}
+        uses: docker/login-action@v3.4.0
+        with:
+          registry: ${{ inputs.registry }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pre-deploy step
+        if: ${{ inputs.pre-deploy-command != '' }}
+        working-directory: ${{ inputs.working-directory != '' && inputs.working-directory || '.' }}
+        run: ${{ inputs.pre-deploy-command }}
+
+      - name: Deploy with Docker Compose
+        if: ${{ inputs.deploy-type == 'docker' }}
+        working-directory: ${{ inputs.working-directory != '' && inputs.working-directory || '.' }}
+        env:
+          COMPOSE_PROJECT_NAME: ${{ inputs.compose-project-name }}
+          COMPOSE_FILE_PATH: ${{ inputs.compose-file }}
+          COMPOSE_ENV_FILE: ${{ inputs.compose-env-file }}
+          COMPOSE_PULL_OVERRIDE: ${{ inputs.compose-pull-command }}
+          COMPOSE_UP_OVERRIDE: ${{ inputs.compose-up-command }}
+          RETRY_ATTEMPTS: ${{ inputs.retry-attempts }}
+          RETRY_DELAY: ${{ inputs.retry-delay }}
+        run: |
+          set -euo pipefail
+
+          retry() {
+            local attempts=$1 delay=$2; shift 2
+            local i=1
+            until "$@"; do
+              [ "$i" -ge "$attempts" ] && { echo "All $attempts attempts failed"; return 1; }
+              echo "Attempt $i/$attempts failed — retrying in ${delay}s..."
+              sleep "$delay"
+              i=$((i + 1))
+            done
+          }
+
+          ARGS=()
+          [ -n "${COMPOSE_PROJECT_NAME:-}" ] && ARGS+=(-p "$COMPOSE_PROJECT_NAME")
+          [ -n "${COMPOSE_FILE_PATH:-}" ] && ARGS+=(-f "$COMPOSE_FILE_PATH")
+          [ -n "${COMPOSE_ENV_FILE:-}" ] && ARGS+=(--env-file "$COMPOSE_ENV_FILE")
+
+          if [ -n "${COMPOSE_PULL_OVERRIDE:-}" ]; then
+            retry "$RETRY_ATTEMPTS" "$RETRY_DELAY" bash -c "$COMPOSE_PULL_OVERRIDE"
+          else
+            retry "$RETRY_ATTEMPTS" "$RETRY_DELAY" docker compose "${ARGS[@]}" pull
+          fi
+
+          if [ -n "${COMPOSE_UP_OVERRIDE:-}" ]; then
+            bash -c "$COMPOSE_UP_OVERRIDE"
+          else
+            docker compose "${ARGS[@]}" up -d
+          fi
+
+      - name: Pull, install & restart
+        if: ${{ inputs.deploy-type == 'bash' }}
+        working-directory: ${{ inputs.working-directory != '' && inputs.working-directory || '.' }}
+        env:
+          PULL_COMMAND: ${{ inputs.pull-command }}
+          INSTALL_COMMAND: ${{ inputs.install-command }}
+          RESTART_COMMAND: ${{ inputs.restart-command }}
+          RETRY_ATTEMPTS: ${{ inputs.retry-attempts }}
+          RETRY_DELAY: ${{ inputs.retry-delay }}
+        run: |
+          set -euo pipefail
+
+          retry() {
+            local attempts=$1 delay=$2; shift 2
+            local i=1
+            until "$@"; do
+              [ "$i" -ge "$attempts" ] && { echo "All $attempts attempts failed"; return 1; }
+              echo "Attempt $i/$attempts failed — retrying in ${delay}s..."
+              sleep "$delay"
+              i=$((i + 1))
+            done
+          }
+
+          retry "$RETRY_ATTEMPTS" "$RETRY_DELAY" bash -c "$PULL_COMMAND"
+
+          if [ -n "${INSTALL_COMMAND:-}" ]; then
+            bash -c "$INSTALL_COMMAND"
+          fi
+
+          if [ -n "${RESTART_COMMAND:-}" ]; then
+            bash -c "$RESTART_COMMAND"
+          fi
+
+      - name: Post-deploy step
+        if: ${{ inputs.post-deploy-command != '' && success() }}
+        working-directory: ${{ inputs.working-directory != '' && inputs.working-directory || '.' }}
+        run: ${{ inputs.post-deploy-command }}
+
+      - name: Notify Deployment Success
+        if: ${{ inputs.notify && success() }}
+        env:
+          TITLE: '🟢 Deployment Successful'
+          COLOR: '5763719'
+          DEPLOY_URL: ${{ inputs.environment-url }}
+        run: |
+          set -uo pipefail
+          if [ -z "${DISCORD_WEBHOOK:-}" ]; then
+            echo "DISCORD_WEBHOOK_DEPLOY not set — skipping notification"
+            exit 0
+          fi
+
+          esc() {
+            local s="$1"
+            s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; s="${s//$'\n'/\\n}"; s="${s//$'\r'/}"
+            printf '%s' "$s"
+          }
+
+          FIELDS="{\"name\":\"📦 Repository\",\"value\":\"$(esc "$REPO")\",\"inline\":true},{\"name\":\"🌿 Branch\",\"value\":\"$(esc "$BRANCH")\",\"inline\":true},{\"name\":\"🖥 Server\",\"value\":\"$(esc "$SERVER_LABEL")\",\"inline\":true}"
+          if [ -n "${DEPLOY_URL:-}" ]; then
+            FIELDS="$FIELDS,{\"name\":\"🔗 Live URL\",\"value\":\"[Open App]($(esc "$DEPLOY_URL"))\",\"inline\":false}"
+          fi
+
+          PAYLOAD="{\"username\":\"$(esc "$NOTIFY_USERNAME")\",\"embeds\":[{\"title\":\"$(esc "$TITLE")\",\"url\":\"$(esc "$RUN_URL")\",\"color\":$COLOR,\"description\":\"The app has been successfully deployed to **$(esc "$SERVER_LABEL")**.\",\"author\":{\"name\":\"$(esc "$ACTOR")\",\"icon_url\":\"$(esc "$AVATAR")\",\"url\":\"$(esc "$ACTOR_URL")\"},\"fields\":[$FIELDS],\"footer\":{\"text\":\"Robtic Deployment Pipeline\"},\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}]}"
+
+          curl -sf -H "Content-Type: application/json" -d "$PAYLOAD" "$DISCORD_WEBHOOK" >/dev/null \
+            && echo "Discord notification sent [success]" \
+            || echo "Discord notification failed [success]" >&2
+
+      - name: Notify Deployment Failure
+        if: ${{ inputs.notify && failure() }}
+        env:
+          TITLE: '🔴 Deployment Failed'
+          COLOR: '15548997'
+        run: |
+          set -uo pipefail
+          if [ -z "${DISCORD_WEBHOOK:-}" ]; then
+            echo "DISCORD_WEBHOOK_DEPLOY not set — skipping notification"
+            exit 0
+          fi
+
+          esc() {
+            local s="$1"
+            s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; s="${s//$'\n'/\\n}"; s="${s//$'\r'/}"
+            printf '%s' "$s"
+          }
+
+          FIELDS="{\"name\":\"📦 Repository\",\"value\":\"$(esc "$REPO")\",\"inline\":true},{\"name\":\"🌿 Branch\",\"value\":\"$(esc "$BRANCH")\",\"inline\":true},{\"name\":\"🖥 Server\",\"value\":\"$(esc "$SERVER_LABEL")\",\"inline\":true}"
+
+          PAYLOAD="{\"username\":\"$(esc "$NOTIFY_USERNAME")\",\"embeds\":[{\"title\":\"$(esc "$TITLE")\",\"url\":\"$(esc "$RUN_URL")\",\"color\":$COLOR,\"description\":\"Deployment failed. Check the GitHub Actions logs.\",\"author\":{\"name\":\"$(esc "$ACTOR")\",\"icon_url\":\"$(esc "$AVATAR")\",\"url\":\"$(esc "$ACTOR_URL")\"},\"fields\":[$FIELDS],\"footer\":{\"text\":\"Robtic Deployment Pipeline\"},\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}]}"
+
+          curl -sf -H "Content-Type: application/json" -d "$PAYLOAD" "$DISCORD_WEBHOOK" >/dev/null \
+            && echo "Discord notification sent [failure]" \
+            || echo "Discord notification failed [failure]" >&2
