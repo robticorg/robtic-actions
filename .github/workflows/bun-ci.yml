@@ -62,6 +62,9 @@ jobs:
 
       - name: Install Dependencies
         run: ${{ inputs.install-command }}
+        env:
+          # Repos whose bunfig.toml pulls @robticorg/* from GitHub Packages read this; the caller grants packages: read.
+          NPM_TOKEN: ${{ github.token }}
 
       - name: TypeScript Check
         if: ${{ inputs.typescript-check }}
